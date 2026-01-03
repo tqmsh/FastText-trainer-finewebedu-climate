@@ -1,0 +1,52 @@
+Snowstorm
+Flood 
+Cold 
+Drought 
+Snow 
+Ice
+Torrential 
+Storm 
+Blizzard 
+Thunder 
+Heatwave
+Deluge
+Heat
+Freezing 
+(above are the keywords from last paper)
+
+Rainfall
+Rainstorm
+Heavy rain
+Light rain
+Showers
+Downpour
+Cloudburst
+Drizzle
+Precipitation
+
+Heatwave
+Excessive heat
+Scorching
+Sweltering
+Hot spell
+Arid
+Drought conditions
+Water shortage
+Heat stress
+
+Snowfall
+Snowdrift
+Snowbound
+
+Cyclone
+Tornado
+Twister
+Hurricane
+Typhoon
+
+Windstorm
+Gale
+Strong winds
+Squall
+Tempest
+Thunderstorm

@@ -74,7 +74,7 @@ class LanguageFilter:
 class KeywordFilter:
     """Keyword-based filter for climate/weather content."""
 
-    def __init__(self, keywords_path: str = "data/keywords.txt"):
+    def __init__(self, keywords_path: str = "data/weather_terms.txt"):
         self.keywords_path = Path(keywords_path)
         self._keywords: Optional[Set[str]] = None
         self._pattern: Optional[re.Pattern] = None
@@ -104,8 +104,8 @@ class KeywordFilter:
         with open(self.keywords_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                # Skip comments and empty lines
-                if line and not line.startswith('#'):
+                # Skip comments, empty lines, and lines with parentheses (inline comments)
+                if line and not line.startswith('#') and '(' not in line:
                     keywords.add(line.lower())
         return keywords
 
@@ -119,7 +119,7 @@ def iter_candidates(
     dataset_config: str = "default",
     split: str = "train",
     lang_model_path: str = "models/lid.176.bin",
-    keywords_path: str = "data/keywords.txt",
+    keywords_path: str = "data/weather_terms.txt",
     english_prob_threshold: float = 0.9,
     max_samples: Optional[int] = None,
     log_interval: int = 10000,
@@ -137,7 +137,7 @@ def iter_candidates(
         english_prob_threshold: Minimum probability for English detection
         max_samples: Maximum samples to process (None for unlimited)
         log_interval: How often to log progress
-        mode: Filter mode - "modern" uses data/keywords.txt,
+        mode: Filter mode - "modern" uses data/weather_terms.txt,
               "historical" uses datasets/historical_climate_regex.csv
 
     Yields:
@@ -313,7 +313,7 @@ def iter_candidates(
 def filter_csv(
     input_path: str = 'datasets/historical_regex_cleaned.csv',
     output_climate: str = 'datasets/historical_climate_regex.csv',
-    keywords_path: str = 'data/keywords.txt',
+    keywords_path: str = 'data/weather_terms.txt',
     text_column: str = 'Text',
     limit: Optional[int] = None,
     mock: bool = False
