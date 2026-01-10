@@ -2,3 +2,4 @@ datasets/*
 CLAUDE.md
 .DS_Store
 PREPROMPT.md
+.env
