@@ -3,9 +3,12 @@
 Ciemia CLI - Climate FineWeb Filter
 
 Commands:
-    sample-label        Sample candidates and label with GPT
-    train-fasttext      Train FastText classifier
-    stream-filter-upload Full streaming filter and upload to HF
+    sample-label             Sample candidates and label with GPT
+    newspaper-sample-label   Sample newspaper CSVs and label with GPT
+    build-training           Build FastText training files
+    train-fasttext           Train FastText classifier
+    stream-filter-upload     Full streaming filter and upload to HF
+    download-lid             Download language ID model
 """
 
 import logging
@@ -86,6 +89,84 @@ def sample_label(num_samples, output, model, max_chars, dataset_config, resume, 
         resume=resume
     )
 
+    click.echo(f"\nLabeling complete!")
+    click.echo(f"  YES labels: {stats['labeled_yes']}")
+    click.echo(f"  NO labels: {stats['labeled_no']}")
+    click.echo(f"  Failed: {stats['failed']}")
+    click.echo(f"  Duplicates skipped: {stats['skipped_duplicate']}")
+
+
+@cli.command('newspaper-sample-label')
+@click.option('--historical-csv', default='datasets/historical_regex_cleaned.csv',
+              help='Historical newspaper CSV')
+@click.option('--modern-csv', default='datasets/modern_regex_cleaned.csv',
+              help='Modern newspaper CSV')
+@click.option('--samples-per-csv', '-n', default=500,
+              help='Samples from each CSV (total = 2 * n)')
+@click.option('--output', '-o', default='data/gpt_labels_newspaper.jsonl',
+              help='Output JSONL path')
+@click.option('--model', '-m', default='gpt-4o-mini', help='OpenAI model')
+@click.option('--max-chars', default=2000, help='Max chars per sample')
+@click.option('--resume/--no-resume', default=False, help='Resume from existing (default: no-resume)')
+@click.option('--rate-limit', default=0.1, help='Delay between API calls (seconds)')
+@click.option('--seed', default=42, help='Random seed for sampling')
+@click.option('--debug/--no-debug', default=False, help='Debug mode with interpretability')
+def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
+                          output, model, max_chars, resume, rate_limit, seed, debug):
+    """Sample newspaper CSVs and label with GPT."""
+    # Check OPENAI_API_KEY
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        click.echo("Error: OPENAI_API_KEY not found in environment", err=True)
+        sys.exit(1)
+
+    # Import dependencies
+    from src.csv_sampler import iter_combined_samples
+    from src.gpt_labeler import GPTLabeler
+
+    # Display info
+    total_samples = samples_per_csv * 2
+    click.echo(f"Starting newspaper sample-label pipeline...")
+    click.echo(f"  Historical CSV: {historical_csv} ({samples_per_csv} samples)")
+    click.echo(f"  Modern CSV: {modern_csv} ({samples_per_csv} samples)")
+    click.echo(f"  Total samples: {total_samples}")
+    click.echo(f"  Output: {output}")
+    click.echo(f"  Model: {model}")
+    click.echo(f"  Truncation: {'NONE (full text)' if max_chars == 999999 else f'{max_chars} chars'}")
+    click.echo(f"  Debug mode: {debug}")
+
+    # Debug mode ALWAYS disables resume (always fresh)
+    if debug:
+        resume = False
+        click.echo(f"  Resume: DISABLED (debug mode always refreshes)")
+    else:
+        click.echo(f"  Resume: {resume}")
+
+    # Initialize labeler
+    labeler = GPTLabeler(
+        api_key=api_key,
+        model=model,
+        max_chars=max_chars,
+        rate_limit_delay=rate_limit,
+        debug_mode=debug
+    )
+
+    # Get samples iterator
+    samples = iter_combined_samples(
+        csv_paths=[historical_csv, modern_csv],
+        samples_per_csv=samples_per_csv,
+        seed=seed
+    )
+
+    # Label
+    stats = labeler.label_batch(
+        samples=samples,
+        output_path=output,
+        num_samples=total_samples,
+        resume=resume
+    )
+
+    # Display results
     click.echo(f"\nLabeling complete!")
     click.echo(f"  YES labels: {stats['labeled_yes']}")
     click.echo(f"  NO labels: {stats['labeled_no']}")

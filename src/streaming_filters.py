@@ -113,6 +113,27 @@ class KeywordFilter:
         """Check if text contains any climate/weather keywords."""
         return bool(self.pattern.search(text))
 
+    def get_matches_with_context(self, text: str, context_chars: int = 20) -> str:
+        """
+        Get keyword matches with surrounding context.
+        Returns formatted string like: '...【BLIZZARD】 freeze... ... 【HEAT】 wave...'
+        """
+        matches = list(self.pattern.findall(text))
+        if not matches:
+            return "No keyword matches"
+
+        all_matches = set(matches)
+        contexts = []
+        for match in all_matches:
+            m = re.search(re.escape(match), text, re.IGNORECASE)
+            if m:
+                start = max(0, m.start() - context_chars)
+                end = min(len(text), m.end() + context_chars)
+                ctx = text[start:end].replace('\n', ' ').replace('\r', ' ')
+                ctx = re.sub(re.escape(match), f'【{match.upper()}】', ctx, flags=re.IGNORECASE)
+                contexts.append(ctx)
+        return ' ... '.join(contexts)
+
 
 def iter_candidates(
     dataset_name: str = "HuggingFaceFW/fineweb-edu",
@@ -334,23 +355,12 @@ def filter_csv(
                 break
             processed += 1
             text = row.get(text_column, '')
-            matches = list(kf.pattern.findall(text))
-            is_climate = bool(matches)
+            is_climate = kf.matches(text)
 
             if mock and is_climate:
-                all_matches = set(matches)
-                contexts = []
-                for match in all_matches:
-                    m = re.search(re.escape(match), text, re.IGNORECASE)
-                    if m:
-                        start = max(0, m.start() - 20)
-                        end = min(len(text), m.end() + 20)
-                        ctx = text[start:end].replace('\n', ' ').replace('\r', ' ')
-                        ctx = re.sub(re.escape(match), f'【{match.upper()}】', ctx, flags=re.IGNORECASE)
-                        contexts.append(ctx)
                 climate_rows.append({
                     'line_number': processed,
-                    'context': ' ... '.join(contexts)
+                    'context': kf.get_matches_with_context(text, context_chars=20)
                 })
             elif is_climate:
                 climate_rows.append(row)

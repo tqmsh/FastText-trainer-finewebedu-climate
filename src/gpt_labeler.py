@@ -76,7 +76,8 @@ class GPTLabeler:
         retry_delay: float = 1.0,
         rate_limit_delay: float = 0.1,
         max_chars: int = 2000,
-        prompt_path: str = "prompts/climate_yesno.txt"
+        prompt_path: str = "prompts/climate_yesno.txt",
+        debug_mode: bool = False
     ):
         self.client = OpenAI(api_key=api_key)
         self.model = model
@@ -85,11 +86,45 @@ class GPTLabeler:
         self.rate_limit_delay = rate_limit_delay
         self.max_chars = max_chars
         self.prompt_template = load_prompt(prompt_path)
+        self.debug_mode = debug_mode
 
-    def label_single(self, text: str) -> Optional[str]:
-        """Label a single text sample."""
-        truncated = truncate_text(text, self.max_chars)
+        # Debug snippet to append to prompt
+        self.debug_snippet = """
+
+IMPORTANT: After your YES/NO answer, explain your reasoning:
+- QUOTE: Provide the EXACT quote/sentence from the text that proves it's climate-related (or "N/A" if NO)
+- REASON: Brief explanation (1-2 sentences)
+
+Format your response EXACTLY like this:
+LABEL: [YES or NO]
+QUOTE: [exact quote or N/A]
+REASON: [brief explanation]"""
+
+        # Lazy load keyword filter for debug mode
+        self._keyword_filter = None
+
+    @property
+    def keyword_filter(self):
+        """Lazy load keyword filter on first use."""
+        if self._keyword_filter is None:
+            from src.streaming_filters import KeywordFilter
+            self._keyword_filter = KeywordFilter(keywords_path="data/weather_terms.txt")
+        return self._keyword_filter
+
+    def label_single(self, text: str) -> Optional[dict]:
+        """Label a single text sample. Returns dict with label and optionally quote/reason."""
+        # Cap at 200K chars (~50K tokens) to stay well under 128K API limit
+        # Newspaper articles can be extremely long (500K+ chars)
+        if len(text) > 200000:
+            truncated = truncate_text(text, max_chars=200000)
+        else:
+            truncated = text
+
         prompt = self.prompt_template.format(text=truncated)
+
+        # Append debug snippet if in debug mode
+        if self.debug_mode:
+            prompt += self.debug_snippet
 
         for attempt in range(self.max_retries):
             try:
@@ -98,18 +133,24 @@ class GPTLabeler:
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=10,
+                    max_tokens=200 if self.debug_mode else 10,
                     temperature=0
                 )
 
                 answer = response.choices[0].message.content
-                label = parse_response(answer)
 
-                if label is None:
+                # Parse based on mode
+                if self.debug_mode:
+                    result = self._parse_debug_response(answer)
+                else:
+                    label = parse_response(answer)
+                    result = {'label': label} if label else None
+
+                if result is None or result.get('label') is None:
                     logger.warning(f"Could not parse response: {answer}")
                     continue
 
-                return label
+                return result
 
             except Exception as e:
                 logger.warning(f"API error (attempt {attempt + 1}): {e}")
@@ -117,6 +158,30 @@ class GPTLabeler:
                     time.sleep(self.retry_delay * (attempt + 1))
 
         return None
+
+    def _parse_debug_response(self, response: str) -> Optional[dict]:
+        """Parse debug response to extract label, quote, and reason."""
+        import re
+
+        # Try to extract LABEL, QUOTE, REASON
+        label_match = re.search(r'LABEL:\s*(\w+)', response, re.IGNORECASE)
+        quote_match = re.search(r'QUOTE:\s*(.+?)(?=REASON:|$)', response, re.IGNORECASE | re.DOTALL)
+        reason_match = re.search(r'REASON:\s*(.+)', response, re.IGNORECASE | re.DOTALL)
+
+        if not label_match:
+            # Fallback to simple YES/NO parsing
+            label = parse_response(response)
+            return {'label': label, 'quote': 'N/A', 'reason': 'Could not parse debug response'} if label else None
+
+        label = label_match.group(1).strip().upper()
+        quote = quote_match.group(1).strip() if quote_match else 'N/A'
+        reason = reason_match.group(1).strip() if reason_match else 'N/A'
+
+        return {
+            'label': label,
+            'quote': quote,
+            'reason': reason
+        }
 
     def label_batch(
         self,
@@ -195,8 +260,14 @@ class GPTLabeler:
                 stats['total_processed'] += 1
 
                 # Label with GPT
-                label = self.label_single(text)
+                result = self.label_single(text)
 
+                if result is None:
+                    stats['failed'] += 1
+                    continue
+
+                # Extract label
+                label = result.get('label')
                 if label is None:
                     stats['failed'] += 1
                     continue
@@ -207,16 +278,32 @@ class GPTLabeler:
                 else:
                     stats['labeled_no'] += 1
 
-                # Write record
-                record = {
-                    'id': sample_id,
-                    'text': text,
-                    'text_hash': h,
-                    'label': label,
-                    'model': self.model,
-                    'prompt_version': PROMPT_VERSION,
-                    'timestamp': datetime.utcnow().isoformat()
-                }
+                # Write record with field order optimized for readability
+                # Important fields first (id, label, quote, reason, keyword_matches), text last
+                if self.debug_mode:
+                    record = {
+                        'id': sample_id,
+                        'label': label,
+                        'quote': result.get('quote', 'N/A'),
+                        'reason': result.get('reason', 'N/A'),
+                        'keyword_matches': self.keyword_filter.get_matches_with_context(text, context_chars=30),
+                        'text_hash': h,
+                        'model': self.model,
+                        'prompt_version': PROMPT_VERSION,
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'text': text  # Full text at the end for easy browsing
+                    }
+                else:
+                    record = {
+                        'id': sample_id,
+                        'label': label,
+                        'text_hash': h,
+                        'model': self.model,
+                        'prompt_version': PROMPT_VERSION,
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'text': text
+                    }
+
                 f.write(json.dumps(record, ensure_ascii=False) + '\n')
                 f.flush()
 

@@ -3,3 +3,23 @@ CLAUDE.md
 .DS_Store
 PREPROMPT.md
 .env
+
+# Logs
+ciemia.log
+*.log
+
+# Data files
+data/*.jsonl
+data/temp_shards/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+src/__pycache__/
+*.cpython-*.pyc
+.Python
+
+# Models
+models/*.bin
