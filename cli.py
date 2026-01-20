@@ -46,11 +46,10 @@ def cli():
 @click.option('--num-samples', '-n', default=10000, help='Number of samples to label')
 @click.option('--output', '-o', default='data/gpt_labels_10k.jsonl', help='Output JSONL path')
 @click.option('--model', '-m', default='gpt-4o-mini', help='OpenAI model to use')
-@click.option('--max-chars', default=2000, help='Max chars per sample (truncated)')
 @click.option('--dataset-config', default='default', help='FineWeb-Edu config')
 @click.option('--resume/--no-resume', default=True, help='Resume from existing labels')
 @click.option('--rate-limit', default=0.1, help='Delay between API calls (seconds)')
-def sample_label(num_samples, output, model, max_chars, dataset_config, resume, rate_limit):
+def sample_label(num_samples, output, model, dataset_config, resume, rate_limit):
     """Sample candidates from FineWeb and label with GPT."""
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
@@ -69,7 +68,6 @@ def sample_label(num_samples, output, model, max_chars, dataset_config, resume, 
     labeler = GPTLabeler(
         api_key=api_key,
         model=model,
-        max_chars=max_chars,
         rate_limit_delay=rate_limit
     )
 
@@ -103,16 +101,18 @@ def sample_label(num_samples, output, model, max_chars, dataset_config, resume, 
               help='Modern newspaper CSV')
 @click.option('--samples-per-csv', '-n', default=500,
               help='Samples from each CSV (total = 2 * n)')
-@click.option('--output', '-o', default='data/gpt_labels_newspaper.jsonl',
-              help='Output JSONL path')
+@click.option('--output', '-o', default='data/gpt_labels_newspaper.json',
+              help='Output JSON path')
 @click.option('--model', '-m', default='gpt-4o-mini', help='OpenAI model')
-@click.option('--max-chars', default=2000, help='Max chars per sample')
-@click.option('--resume/--no-resume', default=False, help='Resume from existing (default: no-resume)')
+@click.option('--chunk-size', default=500, help='Words per chunk for long articles')
+@click.option('--use-chunking/--no-chunking', default=True, help='Enable multi-chunk processing')
+@click.option('--concurrent-workers', default=20, help='Parallel workers for API calls')
 @click.option('--rate-limit', default=0.1, help='Delay between API calls (seconds)')
 @click.option('--seed', default=42, help='Random seed for sampling')
 @click.option('--debug/--no-debug', default=False, help='Debug mode with interpretability')
 def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
-                          output, model, max_chars, resume, rate_limit, seed, debug):
+                          output, model, chunk_size, use_chunking, concurrent_workers,
+                          rate_limit, seed, debug):
     """Sample newspaper CSVs and label with GPT."""
     # Check OPENAI_API_KEY
     api_key = os.getenv('OPENAI_API_KEY')
@@ -132,22 +132,18 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
     click.echo(f"  Total samples: {total_samples}")
     click.echo(f"  Output: {output}")
     click.echo(f"  Model: {model}")
-    click.echo(f"  Truncation: {'NONE (full text)' if max_chars == 999999 else f'{max_chars} chars'}")
+    click.echo(f"  Chunking: {use_chunking} (chunk size: {chunk_size} words)")
+    click.echo(f"  Concurrent workers: {concurrent_workers}")
     click.echo(f"  Debug mode: {debug}")
 
-    # Debug mode ALWAYS disables resume (always fresh)
-    if debug:
-        resume = False
-        click.echo(f"  Resume: DISABLED (debug mode always refreshes)")
-    else:
-        click.echo(f"  Resume: {resume}")
-
-    # Initialize labeler
+    # Initialize labeler with newspaper prompt
     labeler = GPTLabeler(
         api_key=api_key,
         model=model,
-        max_chars=max_chars,
+        chunk_size=chunk_size,
+        use_chunking=use_chunking,
         rate_limit_delay=rate_limit,
+        prompt_path="prompts/climate_yesno_newspaper.txt",
         debug_mode=debug
     )
 
@@ -163,7 +159,8 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
         samples=samples,
         output_path=output,
         num_samples=total_samples,
-        resume=resume
+        resume=False,
+        concurrent_workers=concurrent_workers
     )
 
     # Display results

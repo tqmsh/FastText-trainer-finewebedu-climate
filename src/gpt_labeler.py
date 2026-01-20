@@ -8,8 +8,10 @@ import hashlib
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Iterator, Optional
 
 from openai import OpenAI
@@ -24,24 +26,6 @@ def load_prompt(prompt_path: str = "prompts/climate_yesno.txt") -> str:
     """Load the labeling prompt template."""
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read().strip()
-
-
-def truncate_text(text: str, max_chars: int = 2000) -> str:
-    """
-    Truncate text to max_chars, keeping head and tail.
-    This preserves context from both beginning and end of the document.
-    """
-    if len(text) <= max_chars:
-        return text
-
-    # Keep 70% from head, 30% from tail
-    head_chars = int(max_chars * 0.7)
-    tail_chars = max_chars - head_chars - 20  # 20 chars for separator
-
-    head = text[:head_chars]
-    tail = text[-tail_chars:]
-
-    return f"{head}\n\n[...truncated...]\n\n{tail}"
 
 
 def text_hash(text: str) -> str:
@@ -75,16 +59,18 @@ class GPTLabeler:
         max_retries: int = 3,
         retry_delay: float = 1.0,
         rate_limit_delay: float = 0.1,
-        max_chars: int = 2000,
+        chunk_size: int = 500,
         prompt_path: str = "prompts/climate_yesno.txt",
-        debug_mode: bool = False
+        debug_mode: bool = False,
+        use_chunking: bool = False
     ):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.rate_limit_delay = rate_limit_delay
-        self.max_chars = max_chars
+        self.chunk_size = chunk_size
+        self.use_chunking = use_chunking
         self.prompt_template = load_prompt(prompt_path)
         self.debug_mode = debug_mode
 
@@ -111,16 +97,30 @@ REASON: [brief explanation]"""
             self._keyword_filter = KeywordFilter(keywords_path="data/weather_terms.txt")
         return self._keyword_filter
 
-    def label_single(self, text: str) -> Optional[dict]:
-        """Label a single text sample. Returns dict with label and optionally quote/reason."""
-        # Cap at 200K chars (~50K tokens) to stay well under 128K API limit
-        # Newspaper articles can be extremely long (500K+ chars)
-        if len(text) > 200000:
-            truncated = truncate_text(text, max_chars=200000)
-        else:
-            truncated = text
+    def split_text_to_chunks(self, text: str) -> list[str]:
+        """
+        Split text into chunks of approximately chunk_size words.
 
-        prompt = self.prompt_template.format(text=truncated)
+        Args:
+            text: Text to split
+
+        Returns:
+            List of text chunks
+        """
+        words = text.split()
+        if len(words) <= self.chunk_size:
+            return [text]
+
+        chunks = []
+        for i in range(0, len(words), self.chunk_size):
+            chunk = ' '.join(words[i:i + self.chunk_size])
+            chunks.append(chunk)
+
+        return chunks
+
+    def _label_single_chunk(self, text: str) -> Optional[dict]:
+        """Label a single chunk of text (internal method)."""
+        prompt = self.prompt_template.format(text=text)
 
         # Append debug snippet if in debug mode
         if self.debug_mode:
@@ -159,6 +159,71 @@ REASON: [brief explanation]"""
 
         return None
 
+    def label_single(self, text: str) -> Optional[dict]:
+        """
+        Label a single text sample with optional chunking.
+
+        If use_chunking=True:
+        - Splits text into chunks
+        - Labels each chunk independently
+        - Returns YES if ANY chunk is labeled YES
+        - In debug mode: returns all chunk results
+
+        Args:
+            text: Text to label
+
+        Returns:
+            Dict with label and optionally chunk details
+        """
+        if not self.use_chunking or len(text.split()) <= self.chunk_size:
+            return self._label_single_chunk(text)
+
+        # Multi-chunk strategy
+        chunks = self.split_text_to_chunks(text)
+        logger.info(f"Processing {len(chunks)} chunks...")
+
+        chunk_results = []
+        yes_count = 0
+        no_count = 0
+
+        for i, chunk in enumerate(chunks, 1):
+            logger.debug(f"Chunk {i}/{len(chunks)}: {len(chunk)} chars")
+            result = self._label_single_chunk(chunk)
+
+            if result and result.get('label'):
+                label = result.get('label')
+
+                if self.debug_mode:
+                    chunk_results.append({
+                        'chunk_number': i,
+                        'label': label,
+                        'quote': result.get('quote', 'N/A'),
+                        'reason': result.get('reason', 'N/A'),
+                        'keyword_matches': self.keyword_filter.get_matches_with_context(chunk, 30),
+                        'text': chunk
+                    })
+
+                if label == 'YES':
+                    yes_count += 1
+                    if not self.debug_mode:
+                        logger.info(f"Chunk {i} labeled YES - returning positive result")
+                        return {'label': 'YES'}
+                else:
+                    no_count += 1
+
+        # Return based on mode
+        if self.debug_mode:
+            final_label = 'YES' if yes_count > 0 else 'NO'
+            return {
+                'label': final_label,
+                'yes_chunks': yes_count,
+                'no_chunks': no_count,
+                'chunks': chunk_results
+            }
+        else:
+            # All chunks were NO or failed
+            return {'label': 'NO'}
+
     def _parse_debug_response(self, response: str) -> Optional[dict]:
         """Parse debug response to extract label, quote, and reason."""
         import re
@@ -188,16 +253,18 @@ REASON: [brief explanation]"""
         samples: Iterator[dict],
         output_path: str,
         num_samples: int = 10000,
-        resume: bool = True
+        resume: bool = False,
+        concurrent_workers: int = 1
     ) -> dict:
         """
-        Label a batch of samples and write to JSONL file.
+        Label a batch of samples with multi-threading.
 
         Args:
             samples: Iterator yielding dicts with 'text' and 'id'
-            output_path: Path to output JSONL file
+            output_path: Path to output JSON file
             num_samples: Number of samples to label
-            resume: Whether to resume from existing file
+            resume: Ignored (always overwrites)
+            concurrent_workers: Number of parallel workers
 
         Returns:
             Dict with statistics
@@ -205,23 +272,6 @@ REASON: [brief explanation]"""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Load existing labels for resume and deduplication
-        existing_hashes = set()
-        existing_count = 0
-
-        if resume and output_path.exists():
-            with open(output_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        record = json.loads(line)
-                        existing_hashes.add(record.get('text_hash', ''))
-                        existing_count += 1
-                    except json.JSONDecodeError:
-                        continue
-
-            logger.info(f"Resuming from {existing_count} existing labels")
-
-        # Statistics
         stats = {
             'total_processed': 0,
             'labeled_yes': 0,
@@ -230,89 +280,97 @@ REASON: [brief explanation]"""
             'failed': 0
         }
 
-        # Open file in append mode
-        mode = 'a' if resume and existing_count > 0 else 'w'
-        labels_needed = num_samples - existing_count
+        existing_hashes = set()
+        logger.info(f"Starting fresh labeling run")
 
-        if labels_needed <= 0:
-            logger.info(f"Already have {existing_count} labels, target is {num_samples}")
-            return stats
+        def process_sample(sample: dict) -> Optional[dict]:
+            """Process single sample (runs in worker thread)."""
+            text = sample.get('text', '')
+            sample_id = sample.get('id', '')
 
-        logger.info(f"Need to label {labels_needed} more samples")
+            # Dedup check
+            h = text_hash(text)
+            if h in existing_hashes:
+                return {'status': 'duplicate'}
 
-        with open(output_path, mode, encoding='utf-8') as f:
-            pbar = tqdm(total=labels_needed, desc="Labeling")
+            existing_hashes.add(h)
 
-            for sample in samples:
-                if stats['labeled_yes'] + stats['labeled_no'] >= labels_needed:
-                    break
+            # Label with GPT
+            result = self.label_single(text)
 
-                text = sample.get('text', '')
-                sample_id = sample.get('id', '')
+            if result is None:
+                return {'status': 'failed'}
 
-                # Check for duplicates
-                h = text_hash(text)
-                if h in existing_hashes:
+            label = result.get('label')
+            if label is None:
+                return {'status': 'failed'}
+
+            # Build record
+            if self.debug_mode:
+                record = {
+                    'id': sample_id,
+                    'label': label,
+                    'yes_chunks': result.get('yes_chunks', 0),
+                    'no_chunks': result.get('no_chunks', 0),
+                    'chunks': result.get('chunks', [])
+                }
+            else:
+                record = {
+                    'id': sample_id,
+                    'label': label
+                }
+
+            return {'status': 'success', 'label': label, 'record': record}
+
+        # Collect samples into list for parallel processing
+        sample_list = []
+        for sample in samples:
+            sample_list.append(sample)
+            if len(sample_list) >= num_samples:
+                break
+
+        all_records = []
+
+        with ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
+            futures = [executor.submit(process_sample, s) for s in sample_list]
+
+            pbar = tqdm(total=num_samples, desc="Labeling")
+
+            for future in as_completed(futures):
+                result = future.result()
+
+                if result['status'] == 'duplicate':
                     stats['skipped_duplicate'] += 1
                     continue
 
-                existing_hashes.add(h)
-                stats['total_processed'] += 1
-
-                # Label with GPT
-                result = self.label_single(text)
-
-                if result is None:
+                if result['status'] == 'failed':
                     stats['failed'] += 1
                     continue
 
-                # Extract label
-                label = result.get('label')
-                if label is None:
-                    stats['failed'] += 1
-                    continue
+                # Success
+                label = result['label']
+                record = result['record']
 
-                # Update stats
                 if label == 'YES':
                     stats['labeled_yes'] += 1
                 else:
                     stats['labeled_no'] += 1
 
-                # Write record with field order optimized for readability
-                # Important fields first (id, label, quote, reason, keyword_matches), text last
-                if self.debug_mode:
-                    record = {
-                        'id': sample_id,
-                        'label': label,
-                        'quote': result.get('quote', 'N/A'),
-                        'reason': result.get('reason', 'N/A'),
-                        'keyword_matches': self.keyword_filter.get_matches_with_context(text, context_chars=30),
-                        'text_hash': h,
-                        'model': self.model,
-                        'prompt_version': PROMPT_VERSION,
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'text': text  # Full text at the end for easy browsing
-                    }
-                else:
-                    record = {
-                        'id': sample_id,
-                        'label': label,
-                        'text_hash': h,
-                        'model': self.model,
-                        'prompt_version': PROMPT_VERSION,
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'text': text
-                    }
-
-                f.write(json.dumps(record, ensure_ascii=False) + '\n')
-                f.flush()
-
+                stats['total_processed'] += 1
+                all_records.append(record)
                 pbar.update(1)
 
                 # Rate limiting
                 time.sleep(self.rate_limit_delay)
 
             pbar.close()
+
+        # Sort records by ID for consistent output
+        all_records.sort(key=lambda x: x['id'])
+
+        # Write all records as JSON array with indentation
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(all_records, f, ensure_ascii=False, indent=2)
 
         logger.info(
             f"Labeling complete - YES: {stats['labeled_yes']}, NO: {stats['labeled_no']}, "

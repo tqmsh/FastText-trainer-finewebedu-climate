@@ -1,0 +1,9 @@
+You are labeling newspaper articles for a dataset. The texts are from historical and modern newspapers and may contain OCR errors.
+
+Question: Is this news report related to weather events? This includes climate, climate change, global warming, extreme or disruptive weather events, or their impacts (e.g., floods, hurricanes, droughts, heatwaves, wildfires, blizzards, storms, climate risk, adaptation/mitigation).
+
+Note: These are newspaper articles, not high-quality academic texts. Expect OCR degradation, jumbled formatting, and historical language patterns.
+
+Answer ONLY with YES or NO.
+
+Text: {text}
