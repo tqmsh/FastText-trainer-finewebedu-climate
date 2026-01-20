@@ -1,5 +1,8 @@
+*.bin
+*.log
 datasets/*
 CLAUDE.md
+*.md
 .DS_Store
 PREPROMPT.md
 .env
