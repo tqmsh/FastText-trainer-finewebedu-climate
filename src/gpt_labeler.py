@@ -197,7 +197,10 @@ REASON: [brief explanation]"""
             }
             all_chunks.append(chunk_data)
 
-        for chunk_data in all_chunks:
+        # Only label chunks with keywords (cost optimization)
+        chunks_with_keywords = [c for c in all_chunks if c['has_keywords']]
+
+        for chunk_data in chunks_with_keywords:
             result = self._label_single_chunk(chunk_data['text'])
             if result and result.get('label'):
                 chunk_data['label'] = result['label']
@@ -205,10 +208,10 @@ REASON: [brief explanation]"""
                 chunk_data['quote'] = result.get('quote', 'N/A')
                 chunk_data['reason'] = result.get('reason', 'N/A')
 
-        labeled_count = sum(1 for c in all_chunks if c['labeled'])
-        logger.info(f"Article {article_id}: labeled {labeled_count}/{len(all_chunks)} chunks")
+        labeled_count = sum(1 for c in chunks_with_keywords if c['labeled'])
+        logger.info(f"Article {article_id}: labeled {labeled_count}/{len(chunks_with_keywords)} chunks with keywords (skipped {len(all_chunks) - len(chunks_with_keywords)} without keywords)")
 
-        return [c for c in all_chunks if c['labeled'] and c['label']]
+        return [c for c in chunks_with_keywords if c['labeled'] and c['label']]
 
     def _parse_debug_response(self, response: str) -> Optional[dict]:
         """Parse debug response to extract label, quote, and reason."""
