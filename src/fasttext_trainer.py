@@ -8,14 +8,12 @@ import random
 import re
 import warnings
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 import fasttext
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Suppress FastText warnings
 fasttext.FastText.eprint = lambda x: None
 
 
@@ -32,19 +30,13 @@ def safe_predict(model, text: str, k: int = 1):
         warnings.simplefilter("ignore")
         try:
             labels, probs = model.predict(clean, k=k)
-            # Convert probs to a regular Python list of floats
             probs_list = [float(p) for p in probs]
             return labels, probs_list
-        except (ValueError, TypeError) as e:
-            # Fallback for NumPy 2.x: use model.f directly
-            try:
-                result = model.f.predict(clean, k, 0.0, "")
-                labels = tuple(result[0])
-                probs_list = [float(p) for p in result[1]]
-                return labels, probs_list
-            except Exception:
-                # Last resort fallback
-                return (("__label__other",) * k, [0.0] * k)
+        except (ValueError, TypeError):
+            result = model.f.predict(clean, k, 0.0, "")
+            labels = tuple(result[0])
+            probs_list = [float(p) for p in result[1]]
+            return labels, probs_list
 
 
 def clean_text(text: str) -> str:
@@ -65,10 +57,10 @@ def build_training_files(
     seed: int = 42
 ) -> dict:
     """
-    Convert GPT labels JSONL to FastText training format.
+    Convert chunk-level JSONL labels to FastText training format.
 
     Args:
-        labels_path: Path to gpt_labels_10k.jsonl
+        labels_path: Path to chunk labels JSONL (one chunk per line)
         train_path: Output path for training file
         valid_path: Output path for validation file
         min_chars: Minimum text length to include
@@ -84,11 +76,9 @@ def build_training_files(
     train_path = Path(train_path)
     valid_path = Path(valid_path)
 
-    # Create output directories
     train_path.parent.mkdir(parents=True, exist_ok=True)
     valid_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load and process labels
     samples = []
     stats = {
         'total_loaded': 0,
@@ -102,21 +92,18 @@ def build_training_files(
     with open(labels_path, 'r', encoding='utf-8') as f:
         for line in f:
             try:
-                record = json.loads(line)
+                chunk = json.loads(line)
                 stats['total_loaded'] += 1
 
-                text = record.get('text', '')
-                label = record.get('label', '')
+                text = chunk.get('text', '')
+                label = chunk.get('label', '')
 
-                # Clean text
                 cleaned = clean_text(text)
 
-                # Skip short texts
                 if len(cleaned) < min_chars:
                     stats['skipped_short'] += 1
                     continue
 
-                # Map label to FastText format
                 if label == 'YES':
                     ft_label = '__label__climate'
                     stats['climate_count'] += 1
@@ -131,7 +118,6 @@ def build_training_files(
             except json.JSONDecodeError:
                 continue
 
-    # Shuffle and split
     random.shuffle(samples)
     split_idx = int(len(samples) * (1 - valid_ratio))
 
@@ -141,7 +127,6 @@ def build_training_files(
     stats['train_count'] = len(train_samples)
     stats['valid_count'] = len(valid_samples)
 
-    # Write files
     with open(train_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(train_samples))
 
@@ -149,7 +134,7 @@ def build_training_files(
         f.write('\n'.join(valid_samples))
 
     logger.info(
-        f"Built training files - Train: {stats['train_count']}, Valid: {stats['valid_count']}, "
+        f"Built training files from chunks - Train: {stats['train_count']}, Valid: {stats['valid_count']}, "
         f"Climate: {stats['climate_count']}, Other: {stats['other_count']}"
     )
 

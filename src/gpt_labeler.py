@@ -61,7 +61,6 @@ class GPTLabeler:
         rate_limit_delay: float = 0.1,
         chunk_size: int = 500,
         prompt_path: str = "prompts/climate_yesno.txt",
-        debug_mode: bool = False,
         use_chunking: bool = False
     ):
         self.client = OpenAI(api_key=api_key)
@@ -72,9 +71,7 @@ class GPTLabeler:
         self.chunk_size = chunk_size
         self.use_chunking = use_chunking
         self.prompt_template = load_prompt(prompt_path)
-        self.debug_mode = debug_mode
 
-        # Debug snippet to append to prompt
         self.debug_snippet = """
 
 IMPORTANT: After your YES/NO answer, explain your reasoning:
@@ -86,7 +83,6 @@ LABEL: [YES or NO]
 QUOTE: [exact quote or N/A]
 REASON: [brief explanation]"""
 
-        # Lazy load keyword filter for debug mode
         self._keyword_filter = None
 
     @property
@@ -121,10 +117,7 @@ REASON: [brief explanation]"""
     def _label_single_chunk(self, text: str) -> Optional[dict]:
         """Label a single chunk of text (internal method)."""
         prompt = self.prompt_template.format(text=text)
-
-        # Append debug snippet if in debug mode
-        if self.debug_mode:
-            prompt += self.debug_snippet
+        prompt += self.debug_snippet
 
         for attempt in range(self.max_retries):
             try:
@@ -133,18 +126,12 @@ REASON: [brief explanation]"""
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=200 if self.debug_mode else 10,
+                    max_tokens=200,
                     temperature=0
                 )
 
                 answer = response.choices[0].message.content
-
-                # Parse based on mode
-                if self.debug_mode:
-                    result = self._parse_debug_response(answer)
-                else:
-                    label = parse_response(answer)
-                    result = {'label': label} if label else None
+                result = self._parse_debug_response(answer)
 
                 if result is None or result.get('label') is None:
                     logger.warning(f"Could not parse response: {answer}")
@@ -159,70 +146,69 @@ REASON: [brief explanation]"""
 
         return None
 
-    def label_single(self, text: str) -> Optional[dict]:
+    def label_single(self, text: str, article_id: str = '') -> list[dict]:
         """
-        Label a single text sample with optional chunking.
+        Label chunks with keyword prioritization for cost optimization.
 
-        If use_chunking=True:
-        - Splits text into chunks
-        - Labels each chunk independently
-        - Returns YES if ANY chunk is labeled YES
-        - In debug mode: returns all chunk results
+        Returns list of chunk-level labels for FastText training.
 
         Args:
-            text: Text to label
+            text: Article text to split and label
+            article_id: Article identifier
 
         Returns:
-            Dict with label and optionally chunk details
+            List of dicts with fields ordered for readability:
+            article_id, chunk_number, has_keywords, label, labeled, quote, reason, keyword_matches, text
         """
         if not self.use_chunking or len(text.split()) <= self.chunk_size:
-            return self._label_single_chunk(text)
+            result = self._label_single_chunk(text)
+            if not result:
+                return []
+            keyword_matches = self.keyword_filter.get_matches_with_context(text, 30)
+            return [{
+                'article_id': article_id,
+                'chunk_number': 1,
+                'has_keywords': self.keyword_filter.matches(text),
+                'label': result.get('label'),
+                'labeled': True,
+                'quote': result.get('quote', 'N/A'),
+                'reason': result.get('reason', 'N/A'),
+                'keyword_matches': keyword_matches,
+                'text': text
+            }]
 
-        # Multi-chunk strategy
         chunks = self.split_text_to_chunks(text)
-        logger.info(f"Processing {len(chunks)} chunks...")
+        logger.info(f"Processing {len(chunks)} chunks for article {article_id}...")
 
-        chunk_results = []
-        yes_count = 0
-        no_count = 0
+        all_chunks = []
 
         for i, chunk in enumerate(chunks, 1):
-            logger.debug(f"Chunk {i}/{len(chunks)}: {len(chunk)} chars")
-            result = self._label_single_chunk(chunk)
-
-            if result and result.get('label'):
-                label = result.get('label')
-
-                if self.debug_mode:
-                    chunk_results.append({
-                        'chunk_number': i,
-                        'label': label,
-                        'quote': result.get('quote', 'N/A'),
-                        'reason': result.get('reason', 'N/A'),
-                        'keyword_matches': self.keyword_filter.get_matches_with_context(chunk, 30),
-                        'text': chunk
-                    })
-
-                if label == 'YES':
-                    yes_count += 1
-                    if not self.debug_mode:
-                        logger.info(f"Chunk {i} labeled YES - returning positive result")
-                        return {'label': 'YES'}
-                else:
-                    no_count += 1
-
-        # Return based on mode
-        if self.debug_mode:
-            final_label = 'YES' if yes_count > 0 else 'NO'
-            return {
-                'label': final_label,
-                'yes_chunks': yes_count,
-                'no_chunks': no_count,
-                'chunks': chunk_results
+            has_keywords = self.keyword_filter.matches(chunk)
+            chunk_data = {
+                'article_id': article_id,
+                'chunk_number': i,
+                'has_keywords': has_keywords,
+                'label': None,
+                'labeled': False,
+                'quote': None,
+                'reason': None,
+                'keyword_matches': self.keyword_filter.get_matches_with_context(chunk, 30) if has_keywords else 'No keyword matches',
+                'text': chunk
             }
-        else:
-            # All chunks were NO or failed
-            return {'label': 'NO'}
+            all_chunks.append(chunk_data)
+
+        for chunk_data in all_chunks:
+            result = self._label_single_chunk(chunk_data['text'])
+            if result and result.get('label'):
+                chunk_data['label'] = result['label']
+                chunk_data['labeled'] = True
+                chunk_data['quote'] = result.get('quote', 'N/A')
+                chunk_data['reason'] = result.get('reason', 'N/A')
+
+        labeled_count = sum(1 for c in all_chunks if c['labeled'])
+        logger.info(f"Article {article_id}: labeled {labeled_count}/{len(all_chunks)} chunks")
+
+        return [c for c in all_chunks if c['labeled'] and c['label']]
 
     def _parse_debug_response(self, response: str) -> Optional[dict]:
         """Parse debug response to extract label, quote, and reason."""
@@ -257,13 +243,13 @@ REASON: [brief explanation]"""
         concurrent_workers: int = 1
     ) -> dict:
         """
-        Label a batch of samples with multi-threading.
+        Label a batch of articles and output chunk-level labels to JSONL.
 
         Args:
             samples: Iterator yielding dicts with 'text' and 'id'
-            output_path: Path to output JSON file
-            num_samples: Number of samples to label
-            resume: Ignored (always overwrites)
+            output_path: Path to output JSONL file (one chunk per line)
+            num_samples: Number of articles to label
+            resume: Ignored (always overwrites for idempotency)
             concurrent_workers: Number of parallel workers
 
         Returns:
@@ -273,108 +259,87 @@ REASON: [brief explanation]"""
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         stats = {
-            'total_processed': 0,
-            'labeled_yes': 0,
-            'labeled_no': 0,
-            'skipped_duplicate': 0,
-            'failed': 0
+            'articles_processed': 0,
+            'chunks_total': 0,
+            'chunks_labeled': 0,
+            'chunks_yes': 0,
+            'chunks_no': 0,
+            'articles_duplicate': 0,
+            'articles_failed': 0
         }
 
         existing_hashes = set()
-        logger.info(f"Starting fresh labeling run")
+        logger.info(f"Starting chunk-level labeling (overwriting {output_path})")
 
-        def process_sample(sample: dict) -> Optional[dict]:
-            """Process single sample (runs in worker thread)."""
+        def process_article(sample: dict) -> dict:
+            """Process single article into chunks (runs in worker thread)."""
             text = sample.get('text', '')
-            sample_id = sample.get('id', '')
+            article_id = sample.get('id', '')
 
-            # Dedup check
             h = text_hash(text)
             if h in existing_hashes:
                 return {'status': 'duplicate'}
 
             existing_hashes.add(h)
 
-            # Label with GPT
-            result = self.label_single(text)
+            chunk_labels = self.label_single(text, article_id=article_id)
 
-            if result is None:
+            if not chunk_labels:
                 return {'status': 'failed'}
 
-            label = result.get('label')
-            if label is None:
-                return {'status': 'failed'}
+            return {
+                'status': 'success',
+                'chunks': chunk_labels,
+                'article_id': article_id
+            }
 
-            # Build record
-            if self.debug_mode:
-                record = {
-                    'id': sample_id,
-                    'label': label,
-                    'yes_chunks': result.get('yes_chunks', 0),
-                    'no_chunks': result.get('no_chunks', 0),
-                    'chunks': result.get('chunks', [])
-                }
-            else:
-                record = {
-                    'id': sample_id,
-                    'label': label
-                }
-
-            return {'status': 'success', 'label': label, 'record': record}
-
-        # Collect samples into list for parallel processing
         sample_list = []
         for sample in samples:
             sample_list.append(sample)
             if len(sample_list) >= num_samples:
                 break
 
-        all_records = []
-
-        with ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
-            futures = [executor.submit(process_sample, s) for s in sample_list]
-
-            pbar = tqdm(total=num_samples, desc="Labeling")
-
-            for future in as_completed(futures):
-                result = future.result()
-
-                if result['status'] == 'duplicate':
-                    stats['skipped_duplicate'] += 1
-                    continue
-
-                if result['status'] == 'failed':
-                    stats['failed'] += 1
-                    continue
-
-                # Success
-                label = result['label']
-                record = result['record']
-
-                if label == 'YES':
-                    stats['labeled_yes'] += 1
-                else:
-                    stats['labeled_no'] += 1
-
-                stats['total_processed'] += 1
-                all_records.append(record)
-                pbar.update(1)
-
-                # Rate limiting
-                time.sleep(self.rate_limit_delay)
-
-            pbar.close()
-
-        # Sort records by ID for consistent output
-        all_records.sort(key=lambda x: x['id'])
-
-        # Write all records as JSON array with indentation
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(all_records, f, ensure_ascii=False, indent=2)
+            with ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
+                futures = [executor.submit(process_article, s) for s in sample_list]
+
+                pbar = tqdm(total=num_samples, desc="Labeling articles")
+
+                for future in as_completed(futures):
+                    result = future.result()
+
+                    if result['status'] == 'duplicate':
+                        stats['articles_duplicate'] += 1
+                        pbar.update(1)
+                        continue
+
+                    if result['status'] == 'failed':
+                        stats['articles_failed'] += 1
+                        pbar.update(1)
+                        continue
+
+                    chunks = result['chunks']
+                    stats['articles_processed'] += 1
+                    stats['chunks_total'] += len(chunks)
+
+                    for chunk in chunks:
+                        stats['chunks_labeled'] += 1
+                        if chunk['label'] == 'YES':
+                            stats['chunks_yes'] += 1
+                        else:
+                            stats['chunks_no'] += 1
+
+                        f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
+
+                    pbar.update(1)
+                    time.sleep(self.rate_limit_delay)
+
+                pbar.close()
 
         logger.info(
-            f"Labeling complete - YES: {stats['labeled_yes']}, NO: {stats['labeled_no']}, "
-            f"Failed: {stats['failed']}, Duplicates: {stats['skipped_duplicate']}"
+            f"Chunk labeling complete - Articles: {stats['articles_processed']}, "
+            f"Chunks labeled: {stats['chunks_labeled']} (YES: {stats['chunks_yes']}, NO: {stats['chunks_no']}), "
+            f"Failed: {stats['articles_failed']}, Duplicates: {stats['articles_duplicate']}"
         )
 
         return stats

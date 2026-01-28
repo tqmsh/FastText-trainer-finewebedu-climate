@@ -101,60 +101,51 @@ def sample_label(num_samples, output, model, dataset_config, resume, rate_limit)
               help='Modern newspaper CSV')
 @click.option('--samples-per-csv', '-n', default=500,
               help='Samples from each CSV (total = 2 * n)')
-@click.option('--output', '-o', default='data/gpt_labels_newspaper.json',
-              help='Output JSON path')
+@click.option('--output', '-o', default='data/chunk_labels.jsonl',
+              help='Output JSONL path (chunk-level labels)')
 @click.option('--model', '-m', default='gpt-4o-mini', help='OpenAI model')
 @click.option('--chunk-size', default=500, help='Words per chunk for long articles')
 @click.option('--use-chunking/--no-chunking', default=True, help='Enable multi-chunk processing')
 @click.option('--concurrent-workers', default=20, help='Parallel workers for API calls')
 @click.option('--rate-limit', default=0.1, help='Delay between API calls (seconds)')
 @click.option('--seed', default=42, help='Random seed for sampling')
-@click.option('--debug/--no-debug', default=False, help='Debug mode with interpretability')
 def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
                           output, model, chunk_size, use_chunking, concurrent_workers,
-                          rate_limit, seed, debug):
-    """Sample newspaper CSVs and label with GPT."""
-    # Check OPENAI_API_KEY
+                          rate_limit, seed):
+    """Sample newspaper CSVs and label chunks with GPT."""
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         click.echo("Error: OPENAI_API_KEY not found in environment", err=True)
         sys.exit(1)
 
-    # Import dependencies
     from src.csv_sampler import iter_combined_samples
     from src.gpt_labeler import GPTLabeler
 
-    # Display info
     total_samples = samples_per_csv * 2
-    click.echo(f"Starting newspaper sample-label pipeline...")
+    click.echo(f"Starting chunk-level labeling pipeline...")
     click.echo(f"  Historical CSV: {historical_csv} ({samples_per_csv} samples)")
     click.echo(f"  Modern CSV: {modern_csv} ({samples_per_csv} samples)")
-    click.echo(f"  Total samples: {total_samples}")
+    click.echo(f"  Total articles: {total_samples}")
     click.echo(f"  Output: {output}")
     click.echo(f"  Model: {model}")
     click.echo(f"  Chunking: {use_chunking} (chunk size: {chunk_size} words)")
     click.echo(f"  Concurrent workers: {concurrent_workers}")
-    click.echo(f"  Debug mode: {debug}")
 
-    # Initialize labeler with newspaper prompt
     labeler = GPTLabeler(
         api_key=api_key,
         model=model,
         chunk_size=chunk_size,
         use_chunking=use_chunking,
         rate_limit_delay=rate_limit,
-        prompt_path="prompts/climate_yesno_newspaper.txt",
-        debug_mode=debug
+        prompt_path="prompts/climate_yesno_newspaper.txt"
     )
 
-    # Get samples iterator
     samples = iter_combined_samples(
         csv_paths=[historical_csv, modern_csv],
         samples_per_csv=samples_per_csv,
         seed=seed
     )
 
-    # Label
     stats = labeler.label_batch(
         samples=samples,
         output_path=output,
@@ -163,26 +154,27 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
         concurrent_workers=concurrent_workers
     )
 
-    # Display results
-    click.echo(f"\nLabeling complete!")
-    click.echo(f"  YES labels: {stats['labeled_yes']}")
-    click.echo(f"  NO labels: {stats['labeled_no']}")
-    click.echo(f"  Failed: {stats['failed']}")
-    click.echo(f"  Duplicates skipped: {stats['skipped_duplicate']}")
+    click.echo(f"\nChunk labeling complete!")
+    click.echo(f"  Articles processed: {stats['articles_processed']}")
+    click.echo(f"  Chunks labeled: {stats['chunks_labeled']}")
+    click.echo(f"  YES chunks: {stats['chunks_yes']}")
+    click.echo(f"  NO chunks: {stats['chunks_no']}")
+    click.echo(f"  Failed: {stats['articles_failed']}")
+    click.echo(f"  Duplicates skipped: {stats['articles_duplicate']}")
 
 
 @cli.command('build-training')
-@click.option('--labels', '-l', default='data/gpt_labels_10k.jsonl', help='Input labels JSONL')
+@click.option('--labels', '-l', default='data/chunk_labels.jsonl', help='Input chunk labels JSONL')
 @click.option('--train-output', default='data/fasttext_train.txt', help='Training file output')
 @click.option('--valid-output', default='data/fasttext_valid.txt', help='Validation file output')
 @click.option('--min-chars', default=50, help='Minimum text length')
 @click.option('--valid-ratio', default=0.1, help='Validation set ratio')
 @click.option('--seed', default=42, help='Random seed')
 def build_training(labels, train_output, valid_output, min_chars, valid_ratio, seed):
-    """Build FastText training files from GPT labels."""
+    """Build FastText training files from chunk labels."""
     from src.fasttext_trainer import build_training_files
 
-    click.echo(f"Building training files...")
+    click.echo(f"Building training files from chunks...")
     click.echo(f"  Input: {labels}")
     click.echo(f"  Train output: {train_output}")
     click.echo(f"  Valid output: {valid_output}")
@@ -196,10 +188,10 @@ def build_training(labels, train_output, valid_output, min_chars, valid_ratio, s
         seed=seed
     )
 
-    click.echo(f"\nTraining files built!")
-    click.echo(f"  Total loaded: {stats['total_loaded']}")
-    click.echo(f"  Climate samples: {stats['climate_count']}")
-    click.echo(f"  Other samples: {stats['other_count']}")
+    click.echo(f"\nTraining files built from chunks!")
+    click.echo(f"  Total chunks loaded: {stats['total_loaded']}")
+    click.echo(f"  Climate chunks: {stats['climate_count']}")
+    click.echo(f"  Other chunks: {stats['other_count']}")
     click.echo(f"  Train samples: {stats['train_count']}")
     click.echo(f"  Valid samples: {stats['valid_count']}")
     click.echo(f"  Skipped (too short): {stats['skipped_short']}")

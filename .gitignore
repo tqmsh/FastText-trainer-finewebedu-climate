@@ -26,3 +26,5 @@ src/__pycache__/
 
 # Models
 models/*.bin
+*.txt
+get_commit_files.py
