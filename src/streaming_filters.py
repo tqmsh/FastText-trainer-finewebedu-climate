@@ -159,7 +159,7 @@ def iter_candidates(
         max_samples: Maximum samples to process (None for unlimited)
         log_interval: How often to log progress
         mode: Filter mode - "modern" uses data/weather_terms.txt,
-              "historical" uses datasets/historical_climate_regex.csv
+              "historical" uses datasets/historical_weather_keyword_regex.csv
 
     Yields:
         Dict with 'text' and metadata for each matching sample
@@ -332,8 +332,8 @@ def iter_candidates(
 
 
 def filter_csv(
-    input_path: str = 'datasets/historical_regex_cleaned.csv',
-    output_climate: str = 'datasets/historical_climate_regex.csv',
+    input_path: str = 'datasets/historical_regex.csv',
+    output_climate: str = 'datasets/historical_weather_keyword_regex.csv',
     keywords_path: str = 'data/weather_terms.txt',
     text_column: str = 'Text',
     limit: Optional[int] = None,
@@ -381,15 +381,15 @@ if __name__ == '__main__':
 
     if mode == '--historical':
         filter_csv(
-            input_path='datasets/historical_regex_cleaned.csv',
-            output_climate='datasets/historical_climate_regex.csv',
+            input_path='datasets/historical_regex.csv',
+            output_climate='datasets/historical_weather_keyword_regex.csv',
             limit=int(sys.argv[2]) if len(sys.argv) > 2 else None,
             mock=True
         )
     elif mode == '--modern':
         filter_csv(
-            input_path='datasets/modern_regex_cleaned.csv',
-            output_climate='datasets/modern_climate_regex.csv',
+            input_path='datasets/modern_regex.csv',
+            output_climate='datasets/modern_weather_keyword_regex.csv',
             limit=int(sys.argv[2]) if len(sys.argv) > 2 else None,
             mock=True
         )

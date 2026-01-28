@@ -1,6 +1,6 @@
 [
   {
-    "id": "historical_regex_cleaned_1880-08-26_2",
+    "id": "historical_regex_1880-08-26_2",
     "label": "YES",
     "yes_chunks": 13,
     "no_chunks": 75,
@@ -712,7 +712,7 @@
     ]
   },
   {
-    "id": "historical_regex_cleaned_1882-12-07_1",
+    "id": "historical_regex_1882-12-07_1",
     "label": "YES",
     "yes_chunks": 17,
     "no_chunks": 93,
@@ -1600,7 +1600,7 @@
     ]
   },
   {
-    "id": "historical_regex_cleaned_1887-03-23_4",
+    "id": "historical_regex_1887-03-23_4",
     "label": "YES",
     "yes_chunks": 12,
     "no_chunks": 108,
@@ -2568,7 +2568,7 @@
     ]
   },
   {
-    "id": "historical_regex_cleaned_1896-10-20_0",
+    "id": "historical_regex_1896-10-20_0",
     "label": "YES",
     "yes_chunks": 9,
     "no_chunks": 113,
@@ -3552,7 +3552,7 @@
     ]
   },
   {
-    "id": "historical_regex_cleaned_1899-06-24_3",
+    "id": "historical_regex_1899-06-24_3",
     "label": "YES",
     "yes_chunks": 10,
     "no_chunks": 135,
@@ -4720,7 +4720,7 @@
     ]
   },
   {
-    "id": "modern_regex_cleaned_1990-07-28_2",
+    "id": "modern_regex_1990-07-28_2",
     "label": "YES",
     "yes_chunks": 23,
     "no_chunks": 746,
@@ -10880,7 +10880,7 @@
     ]
   },
   {
-    "id": "modern_regex_cleaned_1992-07-21_1",
+    "id": "modern_regex_1992-07-21_1",
     "label": "YES",
     "yes_chunks": 10,
     "no_chunks": 294,
@@ -13320,7 +13320,7 @@
     ]
   },
   {
-    "id": "modern_regex_cleaned_1996-04-24_4",
+    "id": "modern_regex_1996-04-24_4",
     "label": "YES",
     "yes_chunks": 9,
     "no_chunks": 387,
@@ -16496,7 +16496,7 @@
     ]
   },
   {
-    "id": "modern_regex_cleaned_2004-09-03_0",
+    "id": "modern_regex_2004-09-03_0",
     "label": "YES",
     "yes_chunks": 13,
     "no_chunks": 246,
@@ -18576,7 +18576,7 @@
     ]
   },
   {
-    "id": "modern_regex_cleaned_2007-01-08_3",
+    "id": "modern_regex_2007-01-08_3",
     "label": "YES",
     "yes_chunks": 21,
     "no_chunks": 194,

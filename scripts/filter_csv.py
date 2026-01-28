@@ -123,9 +123,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Filter CSV by climate content')
     parser.add_argument('--mode', choices=['e2e', 'mock'], required=True)
-    parser.add_argument('--input', default='datasets/historical_regex_cleaned.csv')
-    parser.add_argument('--climate-output', default='datasets/historical_climate_regex.csv')
-    parser.add_argument('--no-climate-output', default='datasets/historical_no_climate_regex.csv')
+    parser.add_argument('--input', default='datasets/historical_regex.csv')
+    parser.add_argument('--climate-output', default='datasets/historical_weather_keyword_regex.csv')
+    parser.add_argument('--no-climate-output', default='datasets/historical_no_weather_keyword_regex.csv')
     parser.add_argument('--keywords', default='data/keywords.txt')
     parser.add_argument('--model', default='models/fasttext_climate.bin')
     parser.add_argument('--threshold', type=float, default=0.5)

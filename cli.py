@@ -95,9 +95,9 @@ def sample_label(num_samples, output, model, dataset_config, resume, rate_limit)
 
 
 @cli.command('newspaper-sample-label')
-@click.option('--historical-csv', default='datasets/historical_regex_cleaned.csv',
+@click.option('--historical-csv', default='datasets/historical_regex.csv',
               help='Historical newspaper CSV')
-@click.option('--modern-csv', default='datasets/modern_regex_cleaned.csv',
+@click.option('--modern-csv', default='datasets/modern_regex.csv',
               help='Modern newspaper CSV')
 @click.option('--samples-per-csv', '-n', default=500,
               help='Samples from each CSV (total = 2 * n)')
