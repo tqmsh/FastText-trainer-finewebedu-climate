@@ -31,3 +31,5 @@ get_commit_files.py*.pem
 
 venv/*
 venv
+get_commit_files.py
+*.pem
