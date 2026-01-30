@@ -168,9 +168,7 @@ REASON: [brief explanation]"""
             return [{
                 'article_id': article_id,
                 'chunk_number': 1,
-                'has_keywords': self.keyword_filter.matches(text),
                 'label': result.get('label'),
-                'labeled': True,
                 'quote': result.get('quote', 'N/A'),
                 'reason': result.get('reason', 'N/A'),
                 'keyword_matches': keyword_matches,
@@ -187,9 +185,7 @@ REASON: [brief explanation]"""
             chunk_data = {
                 'article_id': article_id,
                 'chunk_number': i,
-                'has_keywords': has_keywords,
                 'label': None,
-                'labeled': False,
                 'quote': None,
                 'reason': None,
                 'keyword_matches': self.keyword_filter.get_matches_with_context(chunk, 30) if has_keywords else 'No keyword matches',
@@ -204,14 +200,13 @@ REASON: [brief explanation]"""
             result = self._label_single_chunk(chunk_data['text'])
             if result and result.get('label'):
                 chunk_data['label'] = result['label']
-                chunk_data['labeled'] = True
                 chunk_data['quote'] = result.get('quote', 'N/A')
                 chunk_data['reason'] = result.get('reason', 'N/A')
 
-        labeled_count = sum(1 for c in chunks_with_keywords if c['labeled'])
+        labeled_count = sum(1 for c in chunks_with_keywords if c['label'])
         logger.info(f"Article {article_id}: labeled {labeled_count}/{len(chunks_with_keywords)} chunks with keywords (skipped {len(all_chunks) - len(chunks_with_keywords)} without keywords)")
 
-        return [c for c in chunks_with_keywords if c['labeled'] and c['label']]
+        return [c for c in chunks_with_keywords if c['label']]
 
     def _parse_debug_response(self, response: str) -> Optional[dict]:
         """Parse debug response to extract label, quote, and reason."""
@@ -333,6 +328,7 @@ REASON: [brief explanation]"""
                             stats['chunks_no'] += 1
 
                         f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
+                        f.flush()  # Flush immediately for real-time updates
 
                     pbar.update(1)
                     time.sleep(self.rate_limit_delay)
