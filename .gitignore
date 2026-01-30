@@ -28,3 +28,6 @@ src/__pycache__/
 models/*.bin
 *.txt
 get_commit_files.py*.pem
+
+venv/*
+venv
