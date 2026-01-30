@@ -150,7 +150,7 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
         samples=samples,
         output_path=output,
         num_samples=total_samples,
-        resume=False,
+        resume=True,
         concurrent_workers=concurrent_workers
     )
 

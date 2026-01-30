@@ -237,7 +237,7 @@ REASON: [brief explanation]"""
         samples: Iterator[dict],
         output_path: str,
         num_samples: int = 10000,
-        resume: bool = False,
+        resume: bool = True,
         concurrent_workers: int = 1
     ) -> dict:
         """
@@ -247,7 +247,7 @@ REASON: [brief explanation]"""
             samples: Iterator yielding dicts with 'text' and 'id'
             output_path: Path to output JSONL file (one chunk per line)
             num_samples: Number of articles to label
-            resume: Ignored (always overwrites for idempotency)
+            resume: If True, skip already-processed articles and continue
             concurrent_workers: Number of parallel workers
 
         Returns:
@@ -255,6 +255,9 @@ REASON: [brief explanation]"""
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Progress file for resume functionality
+        progress_path = output_path.parent / f"{output_path.stem}_progress.json"
 
         stats = {
             'articles_processed': 0,
@@ -266,8 +269,34 @@ REASON: [brief explanation]"""
             'articles_failed': 0
         }
 
+        # Load existing progress
+        processed_article_ids = set()
+        if resume and progress_path.exists():
+            try:
+                with open(progress_path, 'r') as f:
+                    progress_data = json.load(f)
+                    processed_article_ids = set(progress_data.get('processed_articles', []))
+                    logger.info(f"Resuming from progress file: {len(processed_article_ids)} articles already processed")
+            except Exception as e:
+                logger.warning(f"Could not load progress file: {e}. Starting fresh.")
+        else:
+            logger.info(f"Starting fresh labeling (overwriting {output_path})")
+            # Clear output file if not resuming
+            if output_path.exists():
+                output_path.unlink()
+
         existing_hashes = set()
-        logger.info(f"Starting chunk-level labeling (overwriting {output_path})")
+
+        def save_progress():
+            """Save current progress to file."""
+            progress_data = {
+                'processed_articles': list(processed_article_ids),
+                'total_processed': len(processed_article_ids),
+                'stats': stats,
+                'last_update': datetime.now().isoformat()
+            }
+            with open(progress_path, 'w') as f:
+                json.dump(progress_data, f, indent=2)
 
         def process_article(sample: dict) -> dict:
             """Process single article into chunks (runs in worker thread)."""
@@ -293,15 +322,23 @@ REASON: [brief explanation]"""
 
         sample_list = []
         for sample in samples:
+            # Skip already-processed articles if resuming
+            if sample.get('id') in processed_article_ids:
+                continue
             sample_list.append(sample)
-            if len(sample_list) >= num_samples:
+            if len(sample_list) + len(processed_article_ids) >= num_samples:
                 break
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        logger.info(f"Total articles to process: {len(sample_list)} (already done: {len(processed_article_ids)})")
+
+        # Use append mode if resuming, write mode if starting fresh
+        file_mode = 'a' if resume and output_path.exists() else 'w'
+
+        with open(output_path, file_mode, encoding='utf-8') as f:
             with ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
                 futures = [executor.submit(process_article, s) for s in sample_list]
 
-                pbar = tqdm(total=num_samples, desc="Labeling articles")
+                pbar = tqdm(total=len(sample_list), desc="Labeling articles", initial=0)
 
                 for future in as_completed(futures):
                     result = future.result()
@@ -317,8 +354,12 @@ REASON: [brief explanation]"""
                         continue
 
                     chunks = result['chunks']
+                    article_id = result['article_id']
                     stats['articles_processed'] += 1
                     stats['chunks_total'] += len(chunks)
+
+                    # Mark article as processed
+                    processed_article_ids.add(article_id)
 
                     for chunk in chunks:
                         stats['chunks_labeled'] += 1
@@ -329,6 +370,9 @@ REASON: [brief explanation]"""
 
                         f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
                         f.flush()  # Flush immediately for real-time updates
+
+                    # Save progress after each article
+                    save_progress()
 
                     pbar.update(1)
                     time.sleep(self.rate_limit_delay)
