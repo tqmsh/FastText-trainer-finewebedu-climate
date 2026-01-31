@@ -118,6 +118,10 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
         click.echo("Error: OPENAI_API_KEY not found in environment", err=True)
         sys.exit(1)
 
+    # Silence noisy loggers - only show progress bar
+    logging.getLogger('httpx').setLevel(logging.WARNING)  # Silence HTTP request logs
+    logging.getLogger('openai').setLevel(logging.WARNING)  # Silence OpenAI SDK logs
+
     from src.csv_sampler import iter_combined_samples
     from src.gpt_labeler import GPTLabeler
 
@@ -130,6 +134,7 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
     click.echo(f"  Model: {model}")
     click.echo(f"  Chunking: {use_chunking} (chunk size: {chunk_size} words)")
     click.echo(f"  Concurrent workers: {concurrent_workers}")
+    click.echo()
 
     labeler = GPTLabeler(
         api_key=api_key,

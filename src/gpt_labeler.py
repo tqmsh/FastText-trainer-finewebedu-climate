@@ -176,7 +176,6 @@ REASON: [brief explanation]"""
             }]
 
         chunks = self.split_text_to_chunks(text)
-        logger.info(f"Processing {len(chunks)} chunks for article {article_id}...")
 
         all_chunks = []
 
@@ -185,6 +184,7 @@ REASON: [brief explanation]"""
             chunk_data = {
                 'article_id': article_id,
                 'chunk_number': i,
+                'has_keywords': has_keywords,
                 'label': None,
                 'quote': None,
                 'reason': None,
@@ -196,6 +196,9 @@ REASON: [brief explanation]"""
         # Only label chunks with keywords (cost optimization)
         chunks_with_keywords = [c for c in all_chunks if c['has_keywords']]
 
+        if not chunks_with_keywords:
+            return []
+
         for chunk_data in chunks_with_keywords:
             result = self._label_single_chunk(chunk_data['text'])
             if result and result.get('label'):
@@ -203,10 +206,9 @@ REASON: [brief explanation]"""
                 chunk_data['quote'] = result.get('quote', 'N/A')
                 chunk_data['reason'] = result.get('reason', 'N/A')
 
-        labeled_count = sum(1 for c in chunks_with_keywords if c['label'])
-        logger.info(f"Article {article_id}: labeled {labeled_count}/{len(chunks_with_keywords)} chunks with keywords (skipped {len(all_chunks) - len(chunks_with_keywords)} without keywords)")
-
-        return [c for c in chunks_with_keywords if c['label']]
+        # Return only labeled chunks, excluding internal fields
+        return [{k: v for k, v in c.items() if k != 'has_keywords'}
+                for c in chunks_with_keywords if c['label']]
 
     def _parse_debug_response(self, response: str) -> Optional[dict]:
         """Parse debug response to extract label, quote, and reason."""
