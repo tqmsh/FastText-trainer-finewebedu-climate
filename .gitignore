@@ -33,3 +33,10 @@ venv/*
 venv
 get_commit_files.py
 *.pem
+
+
+ciemia.log
+data/chunk_labels_progress.json
+data/chunk_labels.jsonl
+data/fasttext_train.txt
+data/fasttext_valid.txt
