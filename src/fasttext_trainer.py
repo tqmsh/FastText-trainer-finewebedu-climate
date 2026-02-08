@@ -11,10 +11,42 @@ from pathlib import Path
 from typing import Tuple
 
 import fasttext
+from fasttext.FastText import _FastText as FastTextModel
 
 logger = logging.getLogger(__name__)
 
 fasttext.FastText.eprint = lambda x: None
+
+# Store original predict method before any patching
+_original_predict = FastTextModel.predict
+
+
+def patched_predict(self, text, k=1, threshold=0.0, on_unicode_error='strict'):
+    """
+    Patched predict that works with NumPy 2.x.
+    Uses internal C API directly to avoid np.array(copy=False) issue.
+    """
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = self.f.predict(text, k, threshold, on_unicode_error)
+        if result:
+            # C API returns (prob, label) tuples
+            probs = [float(p) for p, _ in result]
+            labels = [l for _, l in result]
+            return tuple(labels), probs
+        else:
+            return (), []
+
+
+def apply_predict_patch():
+    """Apply NumPy 2.x patch to FastTextModel for inference only."""
+    FastTextModel.predict = patched_predict
+
+
+def remove_predict_patch():
+    """Remove NumPy 2.x patch, restoring original predict method."""
+    FastTextModel.predict = _original_predict
 
 
 def safe_predict(model, text: str, k: int = 1):
@@ -26,17 +58,14 @@ def safe_predict(model, text: str, k: int = 1):
     if not clean:
         return (("__label__other",) * k, [0.0] * k)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            labels, probs = model.predict(clean, k=k)
-            probs_list = [float(p) for p in probs]
-            return labels, probs_list
-        except (ValueError, TypeError):
-            result = model.f.predict(clean, k, 0.0, "")
-            labels = tuple(result[0])
-            probs_list = [float(p) for p in result[1]]
-            return labels, probs_list
+    # Temporarily apply patch for this prediction
+    apply_predict_patch()
+    try:
+        result = model.predict(clean, k=k)
+        return result
+    finally:
+        # Restore original method
+        remove_predict_patch()
 
 
 def clean_text(text: str) -> str:
@@ -54,7 +83,9 @@ def build_training_files(
     valid_path: str,
     min_chars: int = 50,
     valid_ratio: float = 0.1,
-    seed: int = 42
+    seed: int = 42,
+    oversample_climate: bool = True,
+    climate_upsample_multiplier: float = 4.0
 ) -> dict:
     """
     Convert chunk-level JSONL labels to FastText training format.
@@ -66,6 +97,8 @@ def build_training_files(
         min_chars: Minimum text length to include
         valid_ratio: Fraction of data for validation
         seed: Random seed for split
+        oversample_climate: Whether to oversample climate (minority) class
+        climate_upsample_multiplier: How many times to repeat climate samples
 
     Returns:
         Dict with statistics
@@ -79,7 +112,9 @@ def build_training_files(
     train_path.parent.mkdir(parents=True, exist_ok=True)
     valid_path.parent.mkdir(parents=True, exist_ok=True)
 
-    samples = []
+    climate_samples = []
+    other_samples = []
+
     stats = {
         'total_loaded': 0,
         'skipped_short': 0,
@@ -107,17 +142,32 @@ def build_training_files(
                 if label == 'YES':
                     ft_label = '__label__climate'
                     stats['climate_count'] += 1
+                    climate_samples.append(f"{ft_label} {cleaned}")
                 elif label == 'NO':
                     ft_label = '__label__other'
                     stats['other_count'] += 1
+                    other_samples.append(f"{ft_label} {cleaned}")
                 else:
                     continue
-
-                samples.append(f"{ft_label} {cleaned}")
 
             except json.JSONDecodeError:
                 continue
 
+    # Oversample climate samples to balance classes
+    if oversample_climate and climate_samples:
+        num_other = len(other_samples)
+        num_climate = len(climate_samples)
+        target_climate = int(num_other / climate_upsample_multiplier)  # Aim for ~1:4 ratio
+
+        if num_climate < target_climate:
+            # Oversample by repeating climate samples
+            multiplier = target_climate // num_climate
+            remainder = target_climate % num_climate
+            climate_samples = climate_samples * multiplier + climate_samples[:remainder]
+            logger.info(f"Oversampled climate: {num_climate} -> {len(climate_samples)} (multiplier: {multiplier}x)")
+
+    # Combine and shuffle
+    samples = climate_samples + other_samples
     random.shuffle(samples)
     split_idx = int(len(samples) * (1 - valid_ratio))
 
@@ -126,6 +176,7 @@ def build_training_files(
 
     stats['train_count'] = len(train_samples)
     stats['valid_count'] = len(valid_samples)
+    stats['climate_count_upsampled'] = len(climate_samples)
 
     with open(train_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(train_samples))
@@ -135,7 +186,7 @@ def build_training_files(
 
     logger.info(
         f"Built training files from chunks - Train: {stats['train_count']}, Valid: {stats['valid_count']}, "
-        f"Climate: {stats['climate_count']}, Other: {stats['other_count']}"
+        f"Climate: {stats['climate_count']} (upsampled: {stats['climate_count_upsampled']}), Other: {stats['other_count']}"
     )
 
     return stats
@@ -283,6 +334,8 @@ class ClimateClassifier:
         if self._model is None:
             if not self.model_path.exists():
                 raise FileNotFoundError(f"Classifier model not found at {self.model_path}")
+            # Apply patch before loading model for inference
+            apply_predict_patch()
             self._model = fasttext.load_model(str(self.model_path))
         return self._model
 

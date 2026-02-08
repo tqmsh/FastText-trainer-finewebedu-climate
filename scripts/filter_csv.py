@@ -4,11 +4,41 @@ CSV climate filter - routes rows to climate/no_climate files.
 import csv
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import fasttext
+from fasttext.FastText import _FastText as FastTextModel
 
 fasttext.FastText.eprint = lambda x: None
+
+# Store original predict method
+_original_predict = FastTextModel.predict
+
+
+def patched_predict(self, text, k=1, threshold=0.0, on_unicode_error='strict'):
+    """Patched predict that works with NumPy 2.x."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = self.f.predict(text, k, threshold, on_unicode_error)
+        if result:
+            # C API returns (prob, label) tuples
+            probs = [float(p) for p, _ in result]
+            labels = [l for _, l in result]
+            return tuple(labels), probs
+        else:
+            return (), []
+
+
+def apply_patch():
+    """Apply patch for inference only."""
+    FastTextModel.predict = patched_predict
+
+
+def remove_patch():
+    """Remove patch after inference."""
+    FastTextModel.predict = _original_predict
 
 csv.field_size_limit(sys.maxsize)
 
@@ -28,7 +58,10 @@ def load_keywords(path: str) -> re.Pattern:
 def load_fasttext(path: str):
     if not Path(path).exists():
         raise FileNotFoundError(f"Model not found: {path}")
-    return fasttext.load_model(str(path))
+    # Apply patch before loading model for inference
+    apply_patch()
+    model = fasttext.load_model(str(path))
+    return model
 
 
 def find_matched_keywords(text: str, pattern: re.Pattern) -> list[str]:

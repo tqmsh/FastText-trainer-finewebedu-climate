@@ -175,7 +175,9 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
 @click.option('--min-chars', default=50, help='Minimum text length')
 @click.option('--valid-ratio', default=0.1, help='Validation set ratio')
 @click.option('--seed', default=42, help='Random seed')
-def build_training(labels, train_output, valid_output, min_chars, valid_ratio, seed):
+@click.option('--oversample/--no-oversample', default=True, help='Oversample climate (minority) class')
+@click.option('--climate-multiplier', default=4.0, help='Climate upsample multiplier')
+def build_training(labels, train_output, valid_output, min_chars, valid_ratio, seed, oversample, climate_multiplier):
     """Build FastText training files from chunk labels."""
     from src.fasttext_trainer import build_training_files
 
@@ -183,6 +185,7 @@ def build_training(labels, train_output, valid_output, min_chars, valid_ratio, s
     click.echo(f"  Input: {labels}")
     click.echo(f"  Train output: {train_output}")
     click.echo(f"  Valid output: {valid_output}")
+    click.echo(f"  Oversample climate: {oversample} (multiplier: {climate_multiplier})")
 
     stats = build_training_files(
         labels_path=labels,
@@ -190,12 +193,14 @@ def build_training(labels, train_output, valid_output, min_chars, valid_ratio, s
         valid_path=valid_output,
         min_chars=min_chars,
         valid_ratio=valid_ratio,
-        seed=seed
+        seed=seed,
+        oversample_climate=oversample,
+        climate_upsample_multiplier=climate_multiplier
     )
 
     click.echo(f"\nTraining files built from chunks!")
     click.echo(f"  Total chunks loaded: {stats['total_loaded']}")
-    click.echo(f"  Climate chunks: {stats['climate_count']}")
+    click.echo(f"  Climate chunks: {stats['climate_count']} -> {stats.get('climate_count_upsampled', stats['climate_count'])} (upsampled)")
     click.echo(f"  Other chunks: {stats['other_count']}")
     click.echo(f"  Train samples: {stats['train_count']}")
     click.echo(f"  Valid samples: {stats['valid_count']}")
