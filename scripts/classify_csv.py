@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """
-FastText Climate Classifier for CSV Files
+FastText Climate Filter for CSV Files
+
+Pipeline: Regex CSV → Keyword Filter → FastText Filter
 
 Usage:
-    python scripts/classify_csv.py --input /path/to/input.csv --rows 100 --mode debug --strategy 1
-    python scripts/classify_csv.py --input /path/to/input.csv --rows 100 --mode prod --strategy 2
+    # Count mode - just show distribution
+    python scripts/classify_csv.py -i datasets/historical_weather_keyword_regex.csv --mode count
+
+    # Debug mode - show distribution + chunk details for sample rows
+    python scripts/classify_csv.py -i datasets/historical_weather_keyword_regex.csv --mode debug --sample 10
+
+    # E2E mode - save climate rows to new CSV
+    python scripts/classify_csv.py -i datasets/historical_weather_keyword_regex.csv --mode e2e --threshold 0.8
+
+    # Process multiple files
+    python scripts/classify_csv.py -i datasets/historical_weather_keyword_regex.csv datasets/modern_weather_keyword_regex.csv --mode count --threshold 0.8
 """
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -19,14 +31,13 @@ from typing import Iterator, Set, Tuple
 import fasttext
 import pandas as pd
 
-
 # =============================================================================
 # Configuration
 # =============================================================================
 CHUNK_SIZE = 500  # Words per chunk (same as training)
 KEYWORDS_PATH = "data/weather_terms.txt"
 MODEL_PATH = "models/fasttext_climate.bin"
-THRESHOLD = 0.5
+DEFAULT_THRESHOLD = 0.5
 
 
 # =============================================================================
@@ -104,7 +115,7 @@ class KeywordFilter:
 class FastTextClimateClassifier:
     """FastText-based climate content classifier."""
 
-    def __init__(self, model_path: str = MODEL_PATH, threshold: float = THRESHOLD):
+    def __init__(self, model_path: str = MODEL_PATH, threshold: float = DEFAULT_THRESHOLD):
         self.model_path = Path(model_path)
         self.threshold = threshold
         self._model = None
@@ -156,102 +167,13 @@ def split_text_to_chunks(text: str, chunk_size: int = CHUNK_SIZE) -> list[str]:
     return chunks
 
 
-def prioritize_keyword_chunks_with_debug(
-    text: str,
-    classifier: FastTextClimateClassifier,
-    keyword_filter: KeywordFilter
-) -> dict:
-    """
-    Strategy #1: Chunk text, prioritize keyword chunks, decide based on them.
-    Returns detailed debug info for strategy 1.
-    Only includes chunks labeled as climate=True by FastText.
-    If no climate chunks found, shows sample chunks for debugging.
-    """
-    chunks = split_text_to_chunks(text, CHUNK_SIZE)
-
-    result = {
-        'total_chunks': len(chunks),
-        'fasttext_labeled_true_chunks': [],  # Only climate=True chunks
-        'keyword_chunk_climate_count': 0,
-        'keyword_chunk_other_count': 0,
-        'max_climate_prob': 0.0,
-        'is_climate': False
-    }
-
-    if not chunks:
-        return result
-
-    all_chunks_info = []  # Collect all chunk info for fallback debugging
-
-    # Process all chunks
-    for i, chunk in enumerate(chunks):
-        has_keywords = keyword_filter.matches(chunk)
-        is_climate, prob = classifier.is_climate(chunk)
-
-        chunk_info = {
-            'chunk_index': i + 1,
-            'probability': prob,
-            'has_keywords': has_keywords,
-            'is_climate': is_climate,
-            'text': chunk  # Full text
-        }
-        all_chunks_info.append(chunk_info)
-
-        # Only include climate=True chunks
-        if is_climate:
-            result['fasttext_labeled_true_chunks'].append(chunk_info)
-            if prob > result['max_climate_prob']:
-                result['max_climate_prob'] = prob
-
-        if is_climate:
-            result['keyword_chunk_climate_count'] += 1
-        else:
-            result['keyword_chunk_other_count'] += 1
-
-    # Fallback: if no climate chunks found, show sample chunks for debugging
-    if len(result['fasttext_labeled_true_chunks']) == 0:
-        result['sample_chunks_for_debug'] = all_chunks_info[:5]
-
-    # Decision: if any keyword chunk is climate, classify as climate
-    result['is_climate'] = result['max_climate_prob'] >= classifier.threshold
-
-    return result
-
-
-def prioritize_keyword_chunks(
-    text: str,
-    classifier: FastTextClimateClassifier,
-    keyword_filter: KeywordFilter
-) -> Tuple[bool, float]:
-    """
-    Strategy #1: Chunk text, prioritize keyword chunks, decide based on them.
-
-    Returns (is_climate, max_prob)
-    """
-    debug_info = prioritize_keyword_chunks_with_debug(text, classifier, keyword_filter)
-    return debug_info['is_climate'], debug_info['max_climate_prob']
-
-
-def classify_whole_text(
-    text: str,
-    classifier: FastTextClimateClassifier
-) -> Tuple[bool, float]:
-    """
-    Strategy #2: Just feed the whole text at once.
-
-    Returns (is_climate, prob)
-    """
-    return classifier.is_climate(text)
-
-
 # =============================================================================
 # CSV Processing
 # =============================================================================
-def iter_csv_rows(csv_path: str, num_rows: int) -> Iterator[dict]:
-    """Iterate over CSV rows."""
-    df = pd.read_csv(csv_path, nrows=num_rows)
+def get_csv_columns(csv_path: str) -> Tuple[str, str]:
+    """Find text and date columns in CSV."""
+    df = pd.read_csv(csv_path, nrows=1)
 
-    # Find the text column - check common names
     text_column = None
     for col in ['Text', 'text', 'context', 'Content', 'content']:
         if col in df.columns:
@@ -264,6 +186,15 @@ def iter_csv_rows(csv_path: str, num_rows: int) -> Iterator[dict]:
             date_column = col
             break
 
+    return text_column, date_column
+
+
+def iter_csv_rows(csv_path: str, num_rows: int = None) -> Iterator[dict]:
+    """Iterate over CSV rows."""
+    df = pd.read_csv(csv_path, nrows=num_rows)
+
+    text_column, date_column = get_csv_columns(csv_path)
+
     if text_column is None:
         print(f"  WARNING: No text column found. Available columns: {list(df.columns)}")
 
@@ -272,96 +203,155 @@ def iter_csv_rows(csv_path: str, num_rows: int) -> Iterator[dict]:
             'index': idx,
             'text': str(row.get(text_column, '')) if text_column else '',
             'date': str(row.get(date_column, '')) if date_column else '',
+            '_row': row  # Keep original row for output
         }
+
+
+def classify_row(text: str, classifier: FastTextClimateClassifier) -> Tuple[bool, float, dict]:
+    """Classify a single row using chunk + keyword strategy."""
+    chunks = split_text_to_chunks(text, CHUNK_SIZE)
+
+    if not chunks:
+        return False, 0.0, {}
+
+    # Track all chunks for debug
+    all_chunks = []
+    max_prob = 0.0
+    climate_chunks = []
+
+    for i, chunk in enumerate(chunks):
+        is_climate, prob = classifier.is_climate(chunk)
+
+        chunk_info = {
+            'chunk_index': i + 1,
+            'probability': prob,
+            'is_climate': is_climate,
+            'text': chunk
+        }
+        all_chunks.append(chunk_info)
+
+        if is_climate:
+            climate_chunks.append(chunk_info)
+            if prob > max_prob:
+                max_prob = prob
+
+    is_climate_final = max_prob >= classifier.threshold
+
+    debug_info = {
+        'total_chunks': len(chunks),
+        'climate_chunks': len(climate_chunks),
+        'max_probability': max_prob,
+        'is_climate': is_climate_final,
+        'all_chunks': all_chunks[:10] if len(all_chunks) > 10 else all_chunks  # Limit for output
+    }
+
+    return is_climate_final, max_prob, debug_info
 
 
 def process_csv(
     csv_path: str,
     num_rows: int,
-    strategy: int,
+    threshold: float,
     classifier: FastTextClimateClassifier,
-    keyword_filter: KeywordFilter
-) -> Tuple[int, int, list[dict], dict]:
-    """
-    Process CSV and classify each row.
-
-    Returns (climate_count, other_count, climate_rows, debug_info)
-    """
+    mode: str,
+    sample_size: int = 10
+) -> dict:
+    """Process CSV and return results."""
     climate_count = 0
     other_count = 0
     climate_rows = []
-
-    debug_info = {
-        'input_file': csv_path,
-        'num_rows_processed': num_rows,
-        'strategy': strategy,
-        'articles': [],
-        'summary': {
-            'climate_articles': 0,
-            'other_articles': 0,
-            'keyword_chunk_climate_total': 0,
-            'keyword_chunk_other_total': 0
-        }
-    }
+    debug_articles = []
 
     for row in iter_csv_rows(csv_path, num_rows):
         text = row['text']
-        article_idx = row['index']
-
-        if strategy == 1:
-            article_debug = prioritize_keyword_chunks_with_debug(
-                text, classifier, keyword_filter
-            )
-            is_climate = article_debug['is_climate']
-            prob = article_debug['max_climate_prob']
-
-            # Add article info to debug
-            article_debug['article_index'] = article_idx
-            article_debug['date'] = row.get('date', '')
-            debug_info['articles'].append(article_debug)
-            debug_info['summary']['keyword_chunk_climate_total'] += article_debug['keyword_chunk_climate_count']
-            debug_info['summary']['keyword_chunk_other_total'] += article_debug['keyword_chunk_other_count']
-        else:
-            is_climate, prob = classify_whole_text(text, classifier)
-            article_debug = None
+        is_climate, prob, debug_info = classify_row(text, classifier)
 
         if is_climate:
             climate_count += 1
-            row['climate_prob'] = prob
-            climate_rows.append(row)
+            if mode == 'e2e':
+                climate_rows.append(row['_row'])
         else:
             other_count += 1
 
-    debug_info['summary']['climate_articles'] = climate_count
-    debug_info['summary']['other_articles'] = other_count
+        # Collect debug info for sample
+        if mode == 'debug' and len(debug_articles) < sample_size:
+            debug_articles.append({
+                'article_index': row['index'],
+                'date': row['date'],
+                'probability': prob,
+                **debug_info
+            })
 
-    return climate_count, other_count, climate_rows, debug_info
-
-
-def generate_output_filename(input_path: str) -> str:
-    """Generate output filename by inserting 'fasttext' after first underscore."""
-    path = Path(input_path)
-    name = path.stem
-
-    # Find first underscore and insert 'fasttext' after it
-    if '_' in name:
-        first_underscore = name.index('_')
-        new_name = name[:first_underscore + 1] + 'fasttext_' + name[first_underscore + 1:]
-    else:
-        new_name = name + '_fasttext'
-
-    return str(path.parent / (new_name + path.suffix))
+    return {
+        'climate_count': climate_count,
+        'other_count': other_count,
+        'climate_rows': climate_rows,
+        'debug_articles': debug_articles,
+        'total': climate_count + other_count
+    }
 
 
-def save_climate_rows(climate_rows: list[dict], output_path: str):
-    """Save climate-related rows to CSV."""
-    if not climate_rows:
-        print("  No climate rows to save.")
-        return
+def process_file(csv_path: str, args) -> dict:
+    """Process a single CSV file."""
+    threshold = args.threshold
 
-    df = pd.DataFrame(climate_rows)
-    df.to_csv(output_path, index=False)
-    print(f"  Saved {len(climate_rows)} climate rows to: {output_path}")
+    # Override threshold if provided
+    if args.threshold:
+        threshold = args.threshold
+
+    classifier = FastTextClimateClassifier(
+        model_path=args.model,
+        threshold=threshold
+    )
+
+    print(f"\n{'='*60}")
+    print(f"Processing: {csv_path}")
+    print(f"Threshold: {threshold}")
+    print(f"{'='*60}")
+
+    result = process_csv(
+        csv_path=csv_path,
+        num_rows=args.rows,
+        threshold=threshold,
+        classifier=classifier,
+        mode=args.mode,
+        sample_size=args.sample
+    )
+
+    # Output results
+    total = result['total']
+    climate_pct = (result['climate_count'] / total * 100) if total > 0 else 0
+
+    print(f"\n--- Results ---")
+    print(f"Total rows: {total}")
+    print(f"Climate (prob >= {threshold}): {result['climate_count']} ({climate_pct:.1f}%)")
+    print(f"Non-climate: {result['other_count']} ({100-climate_pct:.1f}%)")
+
+    if args.mode == 'debug' and result['debug_articles']:
+        print(f"\n--- Sample Debug Info ({len(result['debug_articles'])} articles) ---")
+        for i, article in enumerate(result['debug_articles'][:3]):
+            print(f"\nArticle {i+1} (index={article['article_index']}):")
+            print(f"  Probability: {article['probability']:.4f}")
+            print(f"  Total chunks: {article['total_chunks']}")
+            print(f"  Climate chunks: {article['climate_chunks']}")
+
+            if article['climate_chunks'] > 0:
+                print(f"  Climate chunk details:")
+                for chunk in article['all_chunks'][:3]:
+                    if chunk['is_climate']:
+                        print(f"    Chunk {chunk['chunk_index']}: prob={chunk['probability']:.4f}")
+
+    if args.mode == 'e2e' and result['climate_rows']:
+        # Generate output filename
+        input_path = Path(csv_path)
+        output_path = input_path.parent / f"{input_path.stem}_fasttext_{int(threshold*100)}.csv"
+
+        # Write climate rows
+        df = pd.DataFrame(result['climate_rows'])
+        df.to_csv(output_path, index=False)
+        print(f"\nSaved {len(result['climate_rows'])} climate rows to: {output_path}")
+
+    return result
 
 
 # =============================================================================
@@ -369,135 +359,74 @@ def save_climate_rows(climate_rows: list[dict], output_path: str):
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Classify CSV rows using FastText climate classifier"
+        description="FastText Climate Filter for CSV Files"
     )
     parser.add_argument(
         '--input', '-i',
+        nargs='+',
         required=True,
-        help='Input CSV file path'
+        help='Input CSV file path(s)'
     )
     parser.add_argument(
         '--rows', '-n',
         type=int,
-        default=100,
-        help='Number of rows to process (default: 100)'
+        default=None,
+        help='Number of rows to process (default: all)'
     )
     parser.add_argument(
         '--mode', '-m',
-        choices=['debug', 'prod'],
-        default='debug',
-        help='Mode: debug (JSON output) or prod (save climate rows)'
+        choices=['count', 'debug', 'e2e'],
+        default='count',
+        help='Mode: count=distribution only, debug=+chunk details, e2e=save climate rows'
     )
     parser.add_argument(
-        '--strategy', '-s',
+        '--threshold', '-t',
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help=f'FastText probability threshold (default: {DEFAULT_THRESHOLD})'
+    )
+    parser.add_argument(
+        '--sample', '-s',
         type=int,
-        choices=[1, 2],
-        default=1,
-        help='Strategy: 1=chunk+keyword prioritization, 2=whole text'
+        default=10,
+        help='Number of articles to show in debug mode (default: 10)'
     )
     parser.add_argument(
         '--model',
         default=MODEL_PATH,
         help=f'FastText model path (default: {MODEL_PATH})'
     )
-    parser.add_argument(
-        '--keywords',
-        default=KEYWORDS_PATH,
-        help=f'Keywords file path (default: {KEYWORDS_PATH})'
-    )
-    parser.add_argument(
-        '--threshold', '-t',
-        type=float,
-        default=THRESHOLD,
-        help=f'Classification threshold (default: {THRESHOLD})'
-    )
-    parser.add_argument(
-        '--output', '-o',
-        help='Output path for debug JSON (default: debug.json)'
-    )
 
     args = parser.parse_args()
 
     print("=" * 60)
-    print("FastText Climate Classifier")
+    print("FastText Climate Filter")
     print("=" * 60)
-    print(f"Input: {args.input}")
-    print(f"Rows: {args.rows}")
     print(f"Mode: {args.mode}")
-    print(f"Strategy: {'chunk+keyword' if args.strategy == 1 else 'whole text'}")
     print(f"Threshold: {args.threshold}")
-    print("-" * 60)
+    print(f"Model: {args.model}")
 
     # Apply NumPy 2.x patch
     apply_predict_patch()
 
     try:
-        # Initialize classifier and keyword filter
-        classifier = FastTextClimateClassifier(
-            model_path=args.model,
-            threshold=args.threshold
-        )
-        keyword_filter = KeywordFilter(keywords_path=args.keywords)
+        total_climate = 0
+        total_other = 0
 
-        print(f"Loaded {len(keyword_filter.keywords)} keywords")
-        print(f"Model: {args.model}")
-        print()
+        for csv_path in args.input:
+            result = process_file(csv_path, args)
+            total_climate += result['climate_count']
+            total_other += result['other_count']
 
-        # Process CSV
-        climate_count, other_count, climate_rows, debug_info = process_csv(
-            csv_path=args.input,
-            num_rows=args.rows,
-            strategy=args.strategy,
-            classifier=classifier,
-            keyword_filter=keyword_filter
-        )
-
-        total = climate_count + other_count
-        climate_pct = (climate_count / total * 100) if total > 0 else 0
-
-        # Output results
-        print("=" * 60)
-        print("RESULTS")
-        print("=" * 60)
-        print(f"Total processed: {total}")
-        print(f"Climate-related: {climate_count} ({climate_pct:.1f}%)")
-        print(f"Other: {other_count} ({100-climate_pct:.1f}%)")
-
-        # Strategy 1 specific stats
-        if args.strategy == 1:
-            kw_climate = debug_info['summary']['keyword_chunk_climate_total']
-            kw_other = debug_info['summary']['keyword_chunk_other_total']
-            print(f"Keyword chunks (climate): {kw_climate}")
-            print(f"Keyword chunks (other): {kw_other}")
-        print("=" * 60)
-
-        # Debug mode: save detailed info to JSON
-        if args.mode == 'debug':
-            # Add timestamp and config to debug info
-            debug_info['timestamp'] = datetime.now().isoformat()
-            debug_info['config'] = {
-                'model_path': args.model,
-                'keywords_path': args.keywords,
-                'threshold': args.threshold,
-                'chunk_size': CHUNK_SIZE
-            }
-
-            # Generate output path
-            if args.output:
-                debug_output_path = args.output
-            else:
-                input_path = Path(args.input)
-                debug_output_path = str(input_path.parent / f"{input_path.stem}_debug.json")
-
-            with open(debug_output_path, 'w', encoding='utf-8') as f:
-                json.dump(debug_info, f, indent=2, ensure_ascii=False)
-
-            print(f"\nDebug output saved to: {debug_output_path}")
-
-        # Production mode: save climate rows
-        if args.mode == 'prod' and climate_rows:
-            output_path = generate_output_filename(args.input)
-            save_climate_rows(climate_rows, output_path)
+        # Summary for multiple files
+        if len(args.input) > 1:
+            print(f"\n{'='*60}")
+            print("OVERALL SUMMARY")
+            print(f"{'='*60}")
+            total_all = total_climate + total_other
+            print(f"Total files: {len(args.input)}")
+            print(f"Total climate: {total_climate} ({total_climate/total_all*100:.1f}%)")
+            print(f"Total non-climate: {total_other} ({total_other/total_all*100:.1f}%)")
 
     finally:
         remove_predict_patch()
