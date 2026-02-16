@@ -56,8 +56,8 @@ def sample_label(num_samples, output, model, dataset_config, resume, rate_limit)
         click.echo("Error: OPENAI_API_KEY not found in environment", err=True)
         sys.exit(1)
 
-    from src.streaming_filters import iter_candidates
-    from src.gpt_labeler import GPTLabeler
+    from src.fasttext.streaming_filters import iter_candidates
+    from src.fasttext.labeler import GPTLabeler
 
     click.echo(f"Starting sample-label pipeline...")
     click.echo(f"  Samples: {num_samples}")
@@ -122,8 +122,8 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
     logging.getLogger('httpx').setLevel(logging.WARNING)  # Silence HTTP request logs
     logging.getLogger('openai').setLevel(logging.WARNING)  # Silence OpenAI SDK logs
 
-    from src.csv_sampler import iter_combined_samples
-    from src.gpt_labeler import GPTLabeler
+    from src.fasttext.csv_sampler import iter_combined_samples
+    from src.fasttext.labeler import GPTLabeler
 
     total_samples = samples_per_csv * 2
     click.echo(f"Starting chunk-level labeling pipeline...")
@@ -179,7 +179,7 @@ def newspaper_sample_label(historical_csv, modern_csv, samples_per_csv,
 @click.option('--climate-multiplier', default=4.0, help='Climate upsample multiplier')
 def build_training(labels, train_output, valid_output, min_chars, valid_ratio, seed, oversample, climate_multiplier):
     """Build FastText training files from chunk labels."""
-    from src.fasttext_trainer import build_training_files
+    from src.fasttext.fasttext_trainer import build_training_files
 
     click.echo(f"Building training files from chunks...")
     click.echo(f"  Input: {labels}")
@@ -218,7 +218,7 @@ def build_training(labels, train_output, valid_output, min_chars, valid_ratio, s
 @click.option('--threshold', default=0.5, help='Classification threshold for evaluation')
 def train_fasttext(train, valid, output, lr, epoch, word_ngrams, dim, threshold):
     """Train FastText binary classifier."""
-    from src.fasttext_trainer import train_classifier, evaluate_classifier
+    from src.fasttext.fasttext_trainer import train_classifier, evaluate_classifier
 
     click.echo(f"Training FastText classifier...")
     click.echo(f"  Train file: {train}")
@@ -281,8 +281,8 @@ def stream_filter_upload(repo_id, classifier, threshold, buffer_size, max_record
         click.echo("Run 'train-fasttext' first.", err=True)
         sys.exit(1)
 
-    from src.streaming_filters import iter_candidates
-    from src.uploader import stream_filter_upload as do_upload
+    from src.fasttext.streaming_filters import iter_candidates
+    from src.fasttext.uploader import stream_filter_upload as do_upload
 
     click.echo(f"Starting stream-filter-upload pipeline...")
     click.echo(f"  Repo: {repo_id}")
